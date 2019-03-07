@@ -204,7 +204,7 @@ int32_t main(int32_t argc, char **argv) {
             }
 
             if ("h264" == imageReading.fourcc()) {
-              // Unpack "h264" frame and calculate PSNR.
+              // Unpack "h264" frame and calculate PSNR/SSIM.
               std::string h264Frame{imageReading.data()};
               const uint32_t LEN{static_cast<uint32_t>(h264Frame.size())};
               if (0 < LEN) {
