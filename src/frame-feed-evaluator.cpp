@@ -305,14 +305,14 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalW
              yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
              finalWidth, finalHeight);
 
+                  std::stringstream sstr;
+                  sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
+                  const std::string str = sstr.str();
                   if (VERBOSE) {
-                    std::stringstream sstr;
-                    sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
-                    const std::string str = sstr.str();
                     std::clog << str << std::endl;
-                    if (reportFile && reportFile->good()) {
-                      *reportFile << str << std::endl;
-                    }
+                  }
+                  if (reportFile && reportFile->good()) {
+                    *reportFile << str << std::endl;
                   }
                 }
               }
