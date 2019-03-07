@@ -3,7 +3,7 @@ Repository to systematically evaluate video compression codecs
 
 Feed:
 ```
-./frame-feed-evaluator  --folder=../pngs/ --name=i420 --delay=0 --cid=111
+./frame-feed-evaluator  --folder=../pngs/ --name=i420 --delay=0 --cid=111 --crop.x=0 --crop.y=0 --crop.width=640 --crop.height=480 --verbose
 ```
 
 Client:

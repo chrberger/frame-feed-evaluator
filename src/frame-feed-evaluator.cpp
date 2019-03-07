@@ -35,12 +35,23 @@
 int32_t main(int32_t argc, char **argv) {
   int32_t retCode{1};
   auto commandlineArguments = cluon::getCommandlineArguments(argc, argv);
+    auto cropCounter{
+        commandlineArguments.count("crop.x") +
+        commandlineArguments.count("crop.y") +
+        commandlineArguments.count("crop.width") +
+        commandlineArguments.count("crop.height")
+    };
   if ( (0 == commandlineArguments.count("folder")) ||
        (0 == commandlineArguments.count("name")) ||
+       ( (0 != cropCounter) && (4 != cropCounter) ) ||
        (0 == commandlineArguments.count("cid")) ) {
     std::cerr << argv[0] << " 'replays' a sequence of *.png files into i420 frames and waits for an ImageReading response before next frame." << std::endl;
     std::cerr << "Usage:   " << argv[0] << " --folder=<Folder with *.png files to replay> [--verbose]" << std::endl;
     std::cerr << "         --folder:          path to a folder with .png files" << std::endl;
+    std::cerr << "         --crop.x:          crop this area from the input image (x for top left)" << std::endl;
+    std::cerr << "         --crop.y:          crop this area from the input image (y for top left)" << std::endl;
+    std::cerr << "         --crop.width:      crop this area from the input image (width)" << std::endl;
+    std::cerr << "         --crop.height:     crop this area from the input image (height)" << std::endl;
     std::cerr << "         --name:            name of the shared memory area to create for i420 frame" << std::endl;
     std::cerr << "         --cid:             CID of the OD4Session to listen for encoded h264 frames" << std::endl;
     std::cerr << "         --delay:           delay between frames in ms; default: 1000" << std::endl;
@@ -53,6 +64,10 @@ int32_t main(int32_t argc, char **argv) {
     retCode = 1;
   } else {
     const std::string folderWithPNGs{commandlineArguments["folder"]};
+    const uint32_t CROP_X{(commandlineArguments.count("crop.x") != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["crop.x"])) : 0};
+    const uint32_t CROP_Y{(commandlineArguments.count("crop.y") != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["crop.y"])) : 0};
+    const uint32_t CROP_WIDTH{(commandlineArguments.count("crop.width") != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["crop.width"])) : 0};
+    const uint32_t CROP_HEIGHT{(commandlineArguments.count("crop.height") != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["crop.height"])) : 0};
     const std::string REPORT{commandlineArguments["report"]};
     const std::string NAME{commandlineArguments["name"]};
     const uint32_t DELAY_START{(commandlineArguments["delay.start"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["delay.start"])) : 5000};
@@ -98,6 +113,7 @@ int32_t main(int32_t argc, char **argv) {
     // Frame data.
     std::vector<unsigned char> rawABGRFromPNG;
     std::vector<unsigned char> rawARGBFrame;
+    std::vector<unsigned char> tempImageBuffer;
     std::unique_ptr<cluon::SharedMemory> sharedMemoryFori420{nullptr};
     std::vector<unsigned char> resultingRawARGBFrame;
 
@@ -133,6 +149,7 @@ int32_t main(int32_t argc, char **argv) {
       std::sort(entries.begin(), entries.end());
 
       uint32_t width{0}, height{0};
+      uint32_t finalWidth{CROP_WIDTH}, finalHeight{CROP_HEIGHT};
       for (const auto &entry : entries) {
         std::string filename{entry};
         if (VERBOSE) {
@@ -148,8 +165,14 @@ int32_t main(int32_t argc, char **argv) {
 
           // Initialize output frame in i420 format.
           if (!sharedMemoryFori420) {
-            sharedMemoryFori420.reset(new cluon::SharedMemory{NAME, width * height * 3/2});
-            std::clog << "[frame-feed-evaluator]: Created shared memory '" << NAME << "' of size " << sharedMemoryFori420->size() << " holding an i420 frame of size " << width << "x" << height << "." << std::endl;
+            if (0 == (finalWidth * finalHeight)) {
+              finalWidth = width;
+              finalHeight = height;
+            }
+
+            tempImageBuffer.reserve(width * height * 3/2);
+            sharedMemoryFori420.reset(new cluon::SharedMemory{NAME, finalWidth * finalHeight * 3/2});
+            std::clog << "[frame-feed-evaluator]: Created shared memory '" << NAME << "' of size " << sharedMemoryFori420->size() << " holding an i420 frame of size " << finalWidth << "x" << finalHeight << "." << std::endl;
 
             // Once the shared memory is created, wait for the first frame to replay
             // so that any downstream processes can attach to it.
@@ -161,41 +184,52 @@ int32_t main(int32_t argc, char **argv) {
           // Exclusive access to shared memory.
           sharedMemoryFori420->lock();
           {
+            // First, transform original image into tempory buffer.
             libyuv::ABGRToI420(reinterpret_cast<uint8_t*>(rawABGRFromPNG.data()), width * 4 /* 4*WIDTH for ABGR*/,
-                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+                               reinterpret_cast<uint8_t*>(tempImageBuffer.data()), width,
+                               reinterpret_cast<uint8_t*>(tempImageBuffer.data()+(width * height)), width/2,
+                               reinterpret_cast<uint8_t*>(tempImageBuffer.data()+(width * height + ((width * height) >> 2))), width/2,
                                width, height);
+
+            // Next, crop input image to desired dimensions.
+            libyuv::ConvertToI420(reinterpret_cast<uint8_t*>(tempImageBuffer.data()), width * height * 3/2 /* 3/2*width for I420*/,
+                                  reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
+                                  reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
+                                  reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
+                                  CROP_X, CROP_Y,
+                                  width, height,
+                                  finalWidth, finalHeight,
+                                  static_cast<libyuv::RotationMode>(0), FOURCC('I', '4', '2', '0'));
 
             // When we need to show the image, transform from i420 back to ARGB.
             if (VERBOSE) {
-              libyuv::I420ToARGB(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-                                 reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-                                 reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
-                                 reinterpret_cast<uint8_t*>(rawARGBFrame.data()), width * 4,
-                                 width, height);
+              libyuv::I420ToARGB(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
+                                 reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
+                                 reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
+                                 reinterpret_cast<uint8_t*>(rawARGBFrame.data()), finalWidth * 4,
+                                 finalWidth, finalHeight);
             }
 
             // Check whether we need to initialize the sourceFrameWindow for viewing.
             if ((nullptr == sourceFrameDisplay) && VERBOSE) {
               sourceFrameDisplay = XOpenDisplay(NULL);
               sourceFrameVisual = DefaultVisual(sourceFrameDisplay, 0);
-              sourceFrameWindow = XCreateSimpleWindow(sourceFrameDisplay, RootWindow(sourceFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
-              sourceFrameXImage = XCreateImage(sourceFrameDisplay, sourceFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawARGBFrame.data()), width, height, 32, 0);
+              sourceFrameWindow = XCreateSimpleWindow(sourceFrameDisplay, RootWindow(sourceFrameDisplay, 0), 0, 0, finalWidth, finalHeight, 1, 0, 0);
+              sourceFrameXImage = XCreateImage(sourceFrameDisplay, sourceFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawARGBFrame.data()), finalWidth, finalHeight, 32, 0);
               XMapWindow(sourceFrameDisplay, sourceFrameWindow);
             }
 
             // Show the image.
             if (VERBOSE) {
-              XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, width, height);
+              XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, finalWidth, finalHeight);
             }
 
             // Check whether we need to initialize the resultingFrameWindow for viewing.
             if ((nullptr == resultingFrameDisplay) && VERBOSE) {
               resultingFrameDisplay = XOpenDisplay(NULL);
               resultingFrameVisual = DefaultVisual(resultingFrameDisplay, 0);
-              resultingFrameWindow = XCreateSimpleWindow(resultingFrameDisplay, RootWindow(resultingFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
-              resultingFrameXImage = XCreateImage(resultingFrameDisplay, resultingFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(resultingRawARGBFrame.data()), width, height, 32, 0);
+              resultingFrameWindow = XCreateSimpleWindow(resultingFrameDisplay, RootWindow(resultingFrameDisplay, 0), 0, 0, finalWidth, finalHeight, 1, 0, 0);
+              resultingFrameXImage = XCreateImage(resultingFrameDisplay, resultingFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(resultingRawARGBFrame.data()), finalWidth, finalHeight, 32, 0);
               XMapWindow(resultingFrameDisplay, resultingFrameWindow);
             }
           }
@@ -248,32 +282,32 @@ int32_t main(int32_t argc, char **argv) {
                     libyuv::I420ToARGB(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
                                        yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
                                        yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-                                       reinterpret_cast<uint8_t*>(resultingRawARGBFrame.data()), width * 4,
-                                       width, height);
-                    XPutImage(resultingFrameDisplay, resultingFrameWindow, DefaultGC(resultingFrameDisplay, 0), resultingFrameXImage, 0, 0, 0, 0, width, height);
+                                       reinterpret_cast<uint8_t*>(resultingRawARGBFrame.data()), finalWidth * 4,
+                                       finalWidth, finalHeight);
+                    XPutImage(resultingFrameDisplay, resultingFrameWindow, DefaultGC(resultingFrameDisplay, 0), resultingFrameXImage, 0, 0, 0, 0, finalWidth, finalHeight);
                   }
 
                   double PSNR = 
-libyuv::I420Psnr(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+libyuv::I420Psnr(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
              yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
              yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
              yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-             width, height);
+             finalWidth, finalHeight);
 
                   double SSIM = 
-libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
              yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
              yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
              yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-             width, height);
+             finalWidth, finalHeight);
 
                   if (VERBOSE) {
                     std::stringstream sstr;
-                    sstr << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
+                    sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
                     const std::string str = sstr.str();
                     std::clog << str << std::endl;
                     if (reportFile && reportFile->good()) {
