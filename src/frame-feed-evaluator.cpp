@@ -67,6 +67,11 @@ int32_t main(int32_t argc, char **argv) {
     Window sourceFrameWindow{0};
     XImage *sourceFrameXImage{nullptr};
 
+    Display *resultingFrameDisplay{nullptr};
+    Visual *resultingFrameVisual{nullptr};
+    Window resultingFrameWindow{0};
+    XImage *resultingFrameXImage{nullptr};
+
     // openh264 openh264Decoder.
     ISVCDecoder *openh264Decoder{nullptr};
     WelsCreateDecoder(&openh264Decoder);
@@ -91,8 +96,8 @@ int32_t main(int32_t argc, char **argv) {
     }
 
     // Frame data.
-    std::vector<unsigned char> rawRGBAFromPNG;
-    std::vector<unsigned char> rawABGRFrame;
+    std::vector<unsigned char> rawABGRFromPNG;
+    std::vector<unsigned char> rawARGBFrame;
     std::unique_ptr<cluon::SharedMemory> sharedMemoryFori420{nullptr};
 
     cluon::OD4Session od4{static_cast<uint16_t>(std::stoi(commandlineArguments["cid"]))};
@@ -116,148 +121,156 @@ int32_t main(int32_t argc, char **argv) {
         }
       }
 
-      uint32_t width{0}, height{0};
+      // Sort file entries.
+      std::vector<std::string> entries;
       for (const auto &entry : std::filesystem::directory_iterator(folderWithPNGs)) {
         std::string filename{entry.path()};
         if (std::string::npos != filename.find(".png")) {
-          if (VERBOSE) {
-            std::clog << "[frame-feed-evaluator]: Processing '" << filename << "'." << std::endl;
+          entries.push_back(filename);
+        }
+      }
+      std::sort(entries.begin(), entries.end());
+
+      uint32_t width{0}, height{0};
+      for (const auto &entry : entries) {
+        std::string filename{entry};
+        if (VERBOSE) {
+          std::clog << "[frame-feed-evaluator]: Processing '" << filename << "'." << std::endl;
+        }
+
+        // Reset raw buffer for PNG.
+        rawABGRFromPNG.clear();
+        unsigned lodePNGRetVal = lodepng::decode(rawABGRFromPNG, width, height, filename.c_str());
+        if (0 == lodePNGRetVal) {
+          rawARGBFrame.reserve(rawABGRFromPNG.size());
+
+          // Initialize output frame in i420 format.
+          if (!sharedMemoryFori420) {
+            sharedMemoryFori420.reset(new cluon::SharedMemory{NAME, width * height * 3/2});
+            std::clog << "[frame-feed-evaluator]: Created shared memory '" << NAME << "' of size " << sharedMemoryFori420->size() << " holding an i420 frame of size " << width << "x" << height << "." << std::endl;
+
+            // Once the shared memory is created, wait for the first frame to replay
+            // so that any downstream processes can attach to it.
+            if (0 < DELAY_START) {
+              std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(DELAY_START));
+            }
           }
 
-          // Reset raw buffer for PNG.
-          rawRGBAFromPNG.clear();
-          unsigned lodePNGRetVal = lodepng::decode(rawRGBAFromPNG, width, height, filename.c_str());
-          if (0 == lodePNGRetVal) {
-            rawABGRFrame.reserve(rawRGBAFromPNG.size());
+          // Exclusive access to shared memory.
+          sharedMemoryFori420->lock();
+          {
+            libyuv::ABGRToI420(reinterpret_cast<uint8_t*>(rawABGRFromPNG.data()), width * 4 /* 4*WIDTH for ABGR*/,
+                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
+                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
+                               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+                               width, height);
 
-            // Initialize output frame in i420 format.
-            if (!sharedMemoryFori420) {
-              sharedMemoryFori420.reset(new cluon::SharedMemory{NAME, width * height * 3/2});
-              std::clog << "[frame-feed-evaluator]: Created shared memory '" << NAME << "' of size " << sharedMemoryFori420->size() << " holding an i420 frame of size " << width << "x" << height << "." << std::endl;
-
-              // Once the shared memory is created, wait for the first frame to replay
-              // so that any downstream processes can attach to it.
-              if (0 < DELAY_START) {
-                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(DELAY_START));
-              }
-            }
-
-            // Exclusive access to shared memory.
-            sharedMemoryFori420->lock();
-            {
-              libyuv::ABGRToI420(reinterpret_cast<uint8_t*>(rawRGBAFromPNG.data()), width * 4 /* 4*WIDTH for ABGR*/,
-                                 reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
+            // When we need to show the image, transform from i420 back to ARGB.
+            if (VERBOSE) {
+              libyuv::I420ToARGB(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
                                  reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
                                  reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+                                 reinterpret_cast<uint8_t*>(rawARGBFrame.data()), width * 4,
                                  width, height);
-
-              // When we need to show the image, transform from i420 back to ARGB.
-              if (VERBOSE) {
-                libyuv::I420ToARGB(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-                                   reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-                                   reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
-                                   reinterpret_cast<uint8_t*>(rawABGRFrame.data()), width * 4,
-                                   width, height);
-              }
-
-              // Check whether we need to initialize the sourceFrameWindow for viewing.
-              if ((nullptr == sourceFrameDisplay) && VERBOSE) {
-                sourceFrameDisplay = XOpenDisplay(NULL);
-                sourceFrameVisual = DefaultVisual(sourceFrameDisplay, 0);
-                sourceFrameWindow = XCreateSimpleWindow(sourceFrameDisplay, RootWindow(sourceFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
-                sourceFrameXImage = XCreateImage(sourceFrameDisplay, sourceFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawABGRFrame.data()), width, height, 32, 0);
-                XMapWindow(sourceFrameDisplay, sourceFrameWindow);
-              }
-
-              // Show the image.
-              if (VERBOSE) {
-                XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, width, height);
-              }
             }
-            sharedMemoryFori420->unlock();
 
-            // Next, inform any downstream processes of the new frame that is ready.
-            hasReceivedImageReading.store(false);
-            before = cluon::time::now();
-            sharedMemoryFori420->setTimeStamp(before);
-            sharedMemoryFori420->notifyAll();
-
-            // Wait for the encoded response.
-            {
-                uint32_t timeout{TIMEOUT};
-                using namespace std::literals::chrono_literals;
-                while (!hasReceivedImageReading.load() &&
-                       !cluon::TerminateHandler::instance().isTerminated.load() &&
-                       (0 < timeout)) {
-                  std::this_thread::sleep_for(1ms);
-                  timeout--;
-                }
-                if ((0 == timeout) && !hasReceivedImageReading.load()) {
-                  std::cerr << "[frame-feed-evaluator]: Timed out while waiting for encoded frame." << std::endl;
-                  if (EXIT_ON_TIMEOUT) {
-                    return retCode;
-                  }
-                }
+            // Check whether we need to initialize the sourceFrameWindow for viewing.
+            if ((nullptr == sourceFrameDisplay) && VERBOSE) {
+              sourceFrameDisplay = XOpenDisplay(NULL);
+              sourceFrameVisual = DefaultVisual(sourceFrameDisplay, 0);
+              sourceFrameWindow = XCreateSimpleWindow(sourceFrameDisplay, RootWindow(sourceFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
+              sourceFrameXImage = XCreateImage(sourceFrameDisplay, sourceFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawARGBFrame.data()), width, height, 32, 0);
+              XMapWindow(sourceFrameDisplay, sourceFrameWindow);
             }
+
+            // Show the image.
             if (VERBOSE) {
-              std::clog << "[frame-feed-evaluator]: Received " << imageReading.fourcc() << " of size " << imageReading.data().size() << std::endl;
+              XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, width, height);
             }
+          }
+          sharedMemoryFori420->unlock();
 
-            if ("h264" == imageReading.fourcc()) {
-              // Unpack "h264" frame and calculate PSNR/SSIM.
-              std::string h264Frame{imageReading.data()};
-              const uint32_t LEN{static_cast<uint32_t>(h264Frame.size())};
-              if (0 < LEN) {
-                uint8_t* yuvData[3];
+          // Next, inform any downstream processes of the new frame that is ready.
+          hasReceivedImageReading.store(false);
+          before = cluon::time::now();
+          sharedMemoryFori420->setTimeStamp(before);
+          sharedMemoryFori420->notifyAll();
 
-                SBufferInfo bufferInfo;
-                memset(&bufferInfo, 0, sizeof (SBufferInfo));
-
-                if (0 != openh264Decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(h264Frame.c_str()), LEN, yuvData, &bufferInfo)) {
-                  std::cerr << "[frame-feed-evaluator]: h264 decoding for current frame failed." << std::endl;
+          // Wait for the encoded response.
+          {
+              uint32_t timeout{TIMEOUT};
+              using namespace std::literals::chrono_literals;
+              while (!hasReceivedImageReading.load() &&
+                     !cluon::TerminateHandler::instance().isTerminated.load() &&
+                     (0 < timeout)) {
+                std::this_thread::sleep_for(1ms);
+                timeout--;
+              }
+              if ((0 == timeout) && !hasReceivedImageReading.load()) {
+                std::cerr << "[frame-feed-evaluator]: Timed out while waiting for encoded frame." << std::endl;
+                if (EXIT_ON_TIMEOUT) {
+                  return retCode;
                 }
-                else {
-                  if (1 == bufferInfo.iBufferStatus) {
-                    double PSNR = 
+              }
+          }
+          if (VERBOSE) {
+            std::clog << "[frame-feed-evaluator]: Received " << imageReading.fourcc() << " of size " << imageReading.data().size() << std::endl;
+          }
+
+          if ("h264" == imageReading.fourcc()) {
+            // Unpack "h264" frame and calculate PSNR/SSIM.
+            std::string h264Frame{imageReading.data()};
+            const uint32_t LEN{static_cast<uint32_t>(h264Frame.size())};
+            if (0 < LEN) {
+              uint8_t* yuvData[3];
+
+              SBufferInfo bufferInfo;
+              memset(&bufferInfo, 0, sizeof (SBufferInfo));
+
+              if (0 != openh264Decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(h264Frame.c_str()), LEN, yuvData, &bufferInfo)) {
+                std::cerr << "[frame-feed-evaluator]: h264 decoding for current frame failed." << std::endl;
+              }
+              else {
+                if (1 == bufferInfo.iBufferStatus) {
+                  double PSNR = 
 libyuv::I420Psnr(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
-               yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
-               yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-               yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-               width, height);
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+             yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
+             yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             width, height);
 
-                    double SSIM = 
+                  double SSIM = 
 libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
-               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
-               reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
-               yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
-               yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-               yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-               width, height);
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
+             reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height + ((width * height) >> 2))), width/2,
+             yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
+             yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             width, height);
 
-                    if (VERBOSE) {
-                      std::stringstream sstr;
-                      sstr << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
-                      const std::string str = sstr.str();
-                      std::clog << str << std::endl;
-                      if (reportFile && reportFile->good()) {
-                        *reportFile << str << std::endl;
-                      }
+                  if (VERBOSE) {
+                    std::stringstream sstr;
+                    sstr << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
+                    const std::string str = sstr.str();
+                    std::clog << str << std::endl;
+                    if (reportFile && reportFile->good()) {
+                      *reportFile << str << std::endl;
                     }
                   }
                 }
               }
             }
           }
-          else {
-            std::cerr << "[frame-feed-evaluator]: Error while loading '" << filename << "': " << lodepng_error_text(lodePNGRetVal) << std::endl;
-          }
+        }
+        else {
+          std::cerr << "[frame-feed-evaluator]: Error while loading '" << filename << "': " << lodepng_error_text(lodePNGRetVal) << std::endl;
+        }
 
-          // Delay playback if desired.
-          if (0 < DELAY) {
-            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(DELAY));
-          }
+        // Delay playback if desired.
+        if (0 < DELAY) {
+          std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(DELAY));
         }
       }
     }
@@ -269,6 +282,9 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
 
     if (nullptr != sourceFrameDisplay) {
       XCloseDisplay(sourceFrameDisplay);
+    }
+    if (nullptr != resultingFrameDisplay) {
+      XCloseDisplay(resultingFrameDisplay);
     }
     retCode = 0;
   }
