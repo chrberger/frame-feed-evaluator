@@ -1,5 +1,4 @@
-build
 b
 pngs
-*csv
 kitti
+output.csv
