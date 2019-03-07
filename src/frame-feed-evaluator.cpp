@@ -40,22 +40,26 @@ int32_t main(int32_t argc, char **argv) {
        (0 == commandlineArguments.count("cid")) ) {
     std::cerr << argv[0] << " 'replays' a sequence of *.png files into i420 frames and waits for an ImageReading response before next frame." << std::endl;
     std::cerr << "Usage:   " << argv[0] << " --folder=<Folder with *.png files to replay> [--verbose]" << std::endl;
-    std::cerr << "         --folder:      path to a folder with .png files" << std::endl;
-    std::cerr << "         --name:        name of the shared memory area to create for i420 frame" << std::endl;
-    std::cerr << "         --cid:         CID of the OD4Session to listen for encoded h264 frames" << std::endl;
-    std::cerr << "         --delay:       delay between frames in ms; default: 1000" << std::endl;
-    std::cerr << "         --delay.start: delay before the first frame is replayed in ms; default: 5000" << std::endl;
-    std::cerr << "         --timeout:     timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
-    std::cerr << "         --verbose:     display PNG frame while replaying" << std::endl;
+    std::cerr << "         --folder:          path to a folder with .png files" << std::endl;
+    std::cerr << "         --name:            name of the shared memory area to create for i420 frame" << std::endl;
+    std::cerr << "         --cid:             CID of the OD4Session to listen for encoded h264 frames" << std::endl;
+    std::cerr << "         --delay:           delay between frames in ms; default: 1000" << std::endl;
+    std::cerr << "         --delay.start:     delay before the first frame is replayed in ms; default: 5000" << std::endl;
+    std::cerr << "         --timeout:         timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
+    std::cerr << "         --noexitontimeout: do not end program on timeout" << std::endl;
+    std::cerr << "         --report:          name of the file for the report" << std::endl;
+    std::cerr << "         --verbose:         display PNG frame while replaying" << std::endl;
     std::cerr << "Example: " << argv[0] << " --folder=. --verbose" << std::endl;
     retCode = 1;
   } else {
     const std::string folderWithPNGs{commandlineArguments["folder"]};
+    const std::string REPORT{commandlineArguments["report"]};
     const std::string NAME{commandlineArguments["name"]};
     const uint32_t DELAY_START{(commandlineArguments["delay.start"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["delay.start"])) : 5000};
     const uint32_t DELAY{(commandlineArguments["delay"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["delay"])) : 1000};
     const uint32_t TIMEOUT{(commandlineArguments["timeout"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["timeout"])) : 40};
     const bool VERBOSE{commandlineArguments.count("verbose") != 0};
+    const bool EXIT_ON_TIMEOUT{commandlineArguments.count("noexitontimeout") == 0};
 
     // Show frames.
     Display *display{nullptr};
@@ -103,6 +107,14 @@ int32_t main(int32_t argc, char **argv) {
           hasReceivedImageReading.store(true);
         }
       });
+
+      std::unique_ptr<std::fstream> reportFile{nullptr};
+      if (!REPORT.empty()) {
+        reportFile.reset(new std::fstream(REPORT.c_str(), std::ios::trunc|std::ios::out));
+        if (!(reportFile && reportFile->good())) {
+          reportFile = nullptr;
+        }
+      }
 
       uint32_t width{0}, height{0};
       for (const auto &entry : std::filesystem::directory_iterator(folderWithPNGs)) {
@@ -182,7 +194,9 @@ int32_t main(int32_t argc, char **argv) {
                 }
                 if ((0 == timeout) && !hasReceivedImageReading.load()) {
                   std::cerr << "[frame-feed-evaluator]: Timed out while waiting for encoded frame." << std::endl;
-                  return retCode;
+                  if (EXIT_ON_TIMEOUT) {
+                    return retCode;
+                  }
                 }
             }
             if (VERBOSE) {
@@ -222,7 +236,15 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
                yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
                width, height);
 
-                    std::clog << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before) << std::endl;
+                    if (VERBOSE) {
+                      std::stringstream sstr;
+                      sstr << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
+                      const std::string str = sstr.str();
+                      std::clog << str << std::endl;
+                      if (reportFile && reportFile->good()) {
+                        *reportFile << str << std::endl;
+                      }
+                    }
                   }
                 }
               }
