@@ -91,16 +91,17 @@ int32_t main(int32_t argc, char **argv) {
 
     cluon::OD4Session od4{static_cast<uint16_t>(std::stoi(commandlineArguments["cid"]))};
     if (od4.isRunning()) {
+      cluon::data::TimeStamp before, after;
       std::atomic<bool> hasReceivedImageReading{false};
       opendlv::proxy::ImageReading imageReading;
-      od4.dataTrigger(opendlv::proxy::ImageReading::ID(), [&hasReceivedImageReading, &imageReading](cluon::data::Envelope &&env){
+      od4.dataTrigger(opendlv::proxy::ImageReading::ID(), [&hasReceivedImageReading, &imageReading, &after](cluon::data::Envelope &&env){
         if (opendlv::proxy::ImageReading::ID() == env.dataType()) {
+          after = env.sent();
           imageReading = cluon::extractMessage<opendlv::proxy::ImageReading>(std::move(env));
           hasReceivedImageReading.store(true);
         }
       });
 
-      cluon::data::TimeStamp before, after;
       uint32_t width{0}, height{0};
       for (const auto &entry : std::filesystem::directory_iterator(folderWithPNGs)) {
         std::string filename{entry.path()};
@@ -164,6 +165,7 @@ int32_t main(int32_t argc, char **argv) {
             // Next, inform any downstream processes of the new frame that is ready.
             hasReceivedImageReading.store(false);
             before = cluon::time::now();
+            sharedMemoryFori420->setTimeStamp(before);
             sharedMemoryFori420->notifyAll();
 
             // Wait for the encoded response.
@@ -172,7 +174,6 @@ int32_t main(int32_t argc, char **argv) {
                 while (!hasReceivedImageReading.load() && !cluon::TerminateHandler::instance().isTerminated.load()) {
                   std::this_thread::sleep_for(1ms);
                 }
-                after = cluon::time::now();
             }
             if (VERBOSE) {
               std::clog << "[frame-feed-evaluator]: Received " << imageReading.fourcc() << " of size " << imageReading.data().size() << std::endl;
@@ -211,7 +212,7 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
                yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
                width, height);
 
-                    std::clog << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";" << LEN << ";" << "PSNR=" << PSNR << ";SSIM=" << SSIM << ";duration(microseconds)=" << cluon::time::deltaInMicroseconds(after, before) << std::endl;
+                    std::clog << "[frame-feed-evaluator]: " << filename << ";" << width << ";" << height << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before) << std::endl;
                   }
                 }
               }
