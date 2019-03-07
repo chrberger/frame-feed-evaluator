@@ -45,6 +45,7 @@ int32_t main(int32_t argc, char **argv) {
     std::cerr << "         --cid:         CID of the OD4Session to listen for encoded h264 frames" << std::endl;
     std::cerr << "         --delay:       delay between frames in ms; default: 1000" << std::endl;
     std::cerr << "         --delay.start: delay before the first frame is replayed in ms; default: 5000" << std::endl;
+    std::cerr << "         --timeout:     timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
     std::cerr << "         --verbose:     display PNG frame while replaying" << std::endl;
     std::cerr << "Example: " << argv[0] << " --folder=. --verbose" << std::endl;
     retCode = 1;
@@ -53,6 +54,7 @@ int32_t main(int32_t argc, char **argv) {
     const std::string NAME{commandlineArguments["name"]};
     const uint32_t DELAY_START{(commandlineArguments["delay.start"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["delay.start"])) : 5000};
     const uint32_t DELAY{(commandlineArguments["delay"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["delay"])) : 1000};
+    const uint32_t TIMEOUT{(commandlineArguments["timeout"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["timeout"])) : 40};
     const bool VERBOSE{commandlineArguments.count("verbose") != 0};
 
     // Show frames.
@@ -170,9 +172,17 @@ int32_t main(int32_t argc, char **argv) {
 
             // Wait for the encoded response.
             {
+                uint32_t timeout{TIMEOUT};
                 using namespace std::literals::chrono_literals;
-                while (!hasReceivedImageReading.load() && !cluon::TerminateHandler::instance().isTerminated.load()) {
+                while (!hasReceivedImageReading.load() &&
+                       !cluon::TerminateHandler::instance().isTerminated.load() &&
+                       (0 < timeout)) {
                   std::this_thread::sleep_for(1ms);
+                  timeout--;
+                }
+                if ((0 == timeout) && !hasReceivedImageReading.load()) {
+                  std::cerr << "[frame-feed-evaluator]: Timed out while waiting for encoded frame." << std::endl;
+                  return retCode;
                 }
             }
             if (VERBOSE) {
