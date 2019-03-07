@@ -99,6 +99,7 @@ int32_t main(int32_t argc, char **argv) {
     std::vector<unsigned char> rawABGRFromPNG;
     std::vector<unsigned char> rawARGBFrame;
     std::unique_ptr<cluon::SharedMemory> sharedMemoryFori420{nullptr};
+    std::vector<unsigned char> resultingRawARGBFrame;
 
     cluon::OD4Session od4{static_cast<uint16_t>(std::stoi(commandlineArguments["cid"]))};
     if (od4.isRunning()) {
@@ -143,6 +144,7 @@ int32_t main(int32_t argc, char **argv) {
         unsigned lodePNGRetVal = lodepng::decode(rawABGRFromPNG, width, height, filename.c_str());
         if (0 == lodePNGRetVal) {
           rawARGBFrame.reserve(rawABGRFromPNG.size());
+          resultingRawARGBFrame.reserve(rawABGRFromPNG.size());
 
           // Initialize output frame in i420 format.
           if (!sharedMemoryFori420) {
@@ -186,6 +188,15 @@ int32_t main(int32_t argc, char **argv) {
             // Show the image.
             if (VERBOSE) {
               XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, width, height);
+            }
+
+            // Check whether we need to initialize the resultingFrameWindow for viewing.
+            if ((nullptr == resultingFrameDisplay) && VERBOSE) {
+              resultingFrameDisplay = XOpenDisplay(NULL);
+              resultingFrameVisual = DefaultVisual(resultingFrameDisplay, 0);
+              resultingFrameWindow = XCreateSimpleWindow(resultingFrameDisplay, RootWindow(resultingFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
+              resultingFrameXImage = XCreateImage(resultingFrameDisplay, resultingFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(resultingRawARGBFrame.data()), width, height, 32, 0);
+              XMapWindow(resultingFrameDisplay, resultingFrameWindow);
             }
           }
           sharedMemoryFori420->unlock();
@@ -232,6 +243,16 @@ int32_t main(int32_t argc, char **argv) {
               }
               else {
                 if (1 == bufferInfo.iBufferStatus) {
+                  // Show the resulting image.
+                  if (VERBOSE) {
+                    libyuv::I420ToARGB(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
+                                       yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+                                       yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+                                       reinterpret_cast<uint8_t*>(resultingRawARGBFrame.data()), width * 4,
+                                       width, height);
+                    XPutImage(resultingFrameDisplay, resultingFrameWindow, DefaultGC(resultingFrameDisplay, 0), resultingFrameXImage, 0, 0, 0, 0, width, height);
+                  }
+
                   double PSNR = 
 libyuv::I420Psnr(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
              reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(width * height)), width/2,
