@@ -48,7 +48,7 @@ int32_t main(int32_t argc, char **argv) {
     std::cerr << "         --timeout:         timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
     std::cerr << "         --noexitontimeout: do not end program on timeout" << std::endl;
     std::cerr << "         --report:          name of the file for the report" << std::endl;
-    std::cerr << "         --verbose:         display PNG frame while replaying" << std::endl;
+    std::cerr << "         --verbose:         sourceFrameDisplay PNG frame while replaying" << std::endl;
     std::cerr << "Example: " << argv[0] << " --folder=. --verbose" << std::endl;
     retCode = 1;
   } else {
@@ -62,10 +62,10 @@ int32_t main(int32_t argc, char **argv) {
     const bool EXIT_ON_TIMEOUT{commandlineArguments.count("noexitontimeout") == 0};
 
     // Show frames.
-    Display *display{nullptr};
-    Visual *visual{nullptr};
-    Window window{0};
-    XImage *ximage{nullptr};
+    Display *sourceFrameDisplay{nullptr};
+    Visual *sourceFrameVisual{nullptr};
+    Window sourceFrameWindow{0};
+    XImage *sourceFrameXImage{nullptr};
 
     // openh264 openh264Decoder.
     ISVCDecoder *openh264Decoder{nullptr};
@@ -160,18 +160,18 @@ int32_t main(int32_t argc, char **argv) {
                                    width, height);
               }
 
-              // Check whether we need to initialize the window for viewing.
-              if ((nullptr == display) && VERBOSE) {
-                display = XOpenDisplay(NULL);
-                visual = DefaultVisual(display, 0);
-                window = XCreateSimpleWindow(display, RootWindow(display, 0), 0, 0, width, height, 1, 0, 0);
-                ximage = XCreateImage(display, visual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawABGRFrame.data()), width, height, 32, 0);
-                XMapWindow(display, window);
+              // Check whether we need to initialize the sourceFrameWindow for viewing.
+              if ((nullptr == sourceFrameDisplay) && VERBOSE) {
+                sourceFrameDisplay = XOpenDisplay(NULL);
+                sourceFrameVisual = DefaultVisual(sourceFrameDisplay, 0);
+                sourceFrameWindow = XCreateSimpleWindow(sourceFrameDisplay, RootWindow(sourceFrameDisplay, 0), 0, 0, width, height, 1, 0, 0);
+                sourceFrameXImage = XCreateImage(sourceFrameDisplay, sourceFrameVisual, 24, ZPixmap, 0, reinterpret_cast<char*>(rawABGRFrame.data()), width, height, 32, 0);
+                XMapWindow(sourceFrameDisplay, sourceFrameWindow);
               }
 
               // Show the image.
               if (VERBOSE) {
-                XPutImage(display, window, DefaultGC(display, 0), ximage, 0, 0, 0, 0, width, height);
+                XPutImage(sourceFrameDisplay, sourceFrameWindow, DefaultGC(sourceFrameDisplay, 0), sourceFrameXImage, 0, 0, 0, 0, width, height);
               }
             }
             sharedMemoryFori420->unlock();
@@ -267,8 +267,8 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), width,
         WelsDestroyDecoder(openh264Decoder);
     }
 
-    if (nullptr != display) {
-      XCloseDisplay(display);
+    if (nullptr != sourceFrameDisplay) {
+      XCloseDisplay(sourceFrameDisplay);
     }
     retCode = 0;
   }
