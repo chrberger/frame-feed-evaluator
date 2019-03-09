@@ -20,6 +20,8 @@
 
 #include "lodepng.h"
 
+#include <vpx/vpx_decoder.h>
+#include <vpx/vp8dx.h>
 #include <wels/codec_api.h>
 #include <libyuv.h>
 #include <X11/Xlib.h>
@@ -110,11 +112,15 @@ int32_t main(int32_t argc, char **argv) {
       return retCode;
     }
 
+    bool vpxCodecInitialized{false};
+    vpx_codec_ctx_t codec;
+
     // Frame data.
     std::vector<unsigned char> rawABGRFromPNG;
     std::vector<unsigned char> rawARGBFrame;
     std::vector<unsigned char> tempImageBuffer;
     std::unique_ptr<cluon::SharedMemory> sharedMemoryFori420{nullptr};
+    std::vector<unsigned char> resultingI420Frame;
     std::vector<unsigned char> resultingRawARGBFrame;
 
     cluon::OD4Session od4{static_cast<uint16_t>(std::stoi(commandlineArguments["cid"]))};
@@ -173,6 +179,7 @@ int32_t main(int32_t argc, char **argv) {
             tempImageBuffer.reserve(width * height * 3/2);
             sharedMemoryFori420.reset(new cluon::SharedMemory{NAME, finalWidth * finalHeight * 3/2});
             std::clog << "[frame-feed-evaluator]: Created shared memory '" << NAME << "' of size " << sharedMemoryFori420->size() << " holding an i420 frame of size " << finalWidth << "x" << finalHeight << "." << std::endl;
+            resultingI420Frame.reserve(sharedMemoryFori420->size());
 
             // Once the shared memory is created, wait for the first frame to replay
             // so that any downstream processes can attach to it.
@@ -262,22 +269,78 @@ int32_t main(int32_t argc, char **argv) {
             std::clog << "[frame-feed-evaluator]: Received " << imageReading.fourcc() << " of size " << imageReading.data().size() << std::endl;
           }
 
-          if ("h264" == imageReading.fourcc()) {
-            // Unpack "h264" frame and calculate PSNR/SSIM.
-            std::string h264Frame{imageReading.data()};
-            const uint32_t LEN{static_cast<uint32_t>(h264Frame.size())};
+          bool frameDecodedSuccessfully{false};
+          std::string compressedFrame{imageReading.data()};
+          const uint32_t LEN{static_cast<uint32_t>(compressedFrame.size())};
+
+          if ( ("VP80" == imageReading.fourcc()) || ("VP90" == imageReading.fourcc()) ) {
+            // Unpack VPx frame.
+            if (!vpxCodecInitialized) {
+              if ("VP80" == imageReading.fourcc()) {
+                if (!vpx_codec_dec_init(&codec, &vpx_codec_vp8_dx_algo, nullptr, 0)) {
+                  std::clog << "[frame-feed-evaluator]: Using " << vpx_codec_iface_name(&vpx_codec_vp8_dx_algo) << std::endl;
+                  vpxCodecInitialized = true;
+                }
+              }
+              if ("VP90" == imageReading.fourcc()) {
+                if (!vpx_codec_dec_init(&codec, &vpx_codec_vp9_dx_algo, nullptr, 0)) {
+                  std::clog << "[frame-feed-evaluator]: Using " << vpx_codec_iface_name(&vpx_codec_vp9_dx_algo) << std::endl;
+                  vpxCodecInitialized = true;
+                }
+              }
+            }
+            if (vpxCodecInitialized) {
+              if (0 < LEN) {
+                if (vpx_codec_decode(&codec, reinterpret_cast<const unsigned char*>(compressedFrame.c_str()), LEN, nullptr, 0)) {
+                  std::cerr << "[frame-feed-evaluator]: Decoding for current frame failed." << std::endl;
+                }
+                else {
+                  frameDecodedSuccessfully = true;
+
+                  vpx_codec_iter_t it{nullptr};
+                  vpx_image_t *yuvFrame{nullptr};
+                  while (nullptr != (yuvFrame = vpx_codec_get_frame(&codec, &it))) {
+                    libyuv::I420Copy(yuvFrame->planes[VPX_PLANE_Y], yuvFrame->stride[VPX_PLANE_Y],
+                                     yuvFrame->planes[VPX_PLANE_U], yuvFrame->stride[VPX_PLANE_U],
+                                     yuvFrame->planes[VPX_PLANE_V], yuvFrame->stride[VPX_PLANE_V],
+                                     reinterpret_cast<uint8_t*>(resultingI420Frame.data()), finalWidth,
+                                     reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth * finalHeight)), finalWidth/2,
+                                     reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
+                                     finalWidth, finalHeight);
+
+                    if (VERBOSE) {
+                      libyuv::I420ToARGB(yuvFrame->planes[VPX_PLANE_Y], yuvFrame->stride[VPX_PLANE_Y],
+                                         yuvFrame->planes[VPX_PLANE_U], yuvFrame->stride[VPX_PLANE_U],
+                                         yuvFrame->planes[VPX_PLANE_V], yuvFrame->stride[VPX_PLANE_V],
+                                         reinterpret_cast<uint8_t*>(resultingRawARGBFrame.data()), finalWidth * 4,
+                                         finalWidth, finalHeight);
+                      XPutImage(resultingFrameDisplay, resultingFrameWindow, DefaultGC(resultingFrameDisplay, 0), resultingFrameXImage, 0, 0, 0, 0, finalWidth, finalHeight);
+                    }
+
+                  }
+                }
+              }
+            }
+          }
+          else if ("h264" == imageReading.fourcc()) {
+            // Unpack "h264" frame.
             if (0 < LEN) {
               uint8_t* yuvData[3];
-
               SBufferInfo bufferInfo;
               memset(&bufferInfo, 0, sizeof (SBufferInfo));
-
-              if (0 != openh264Decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(h264Frame.c_str()), LEN, yuvData, &bufferInfo)) {
+              if (0 != openh264Decoder->DecodeFrame2(reinterpret_cast<const unsigned char*>(compressedFrame.c_str()), LEN, yuvData, &bufferInfo)) {
                 std::cerr << "[frame-feed-evaluator]: h264 decoding for current frame failed." << std::endl;
               }
               else {
                 if (1 == bufferInfo.iBufferStatus) {
-                  // Show the resulting image.
+                  libyuv::I420Copy(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
+                                   yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+                                   yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+                                   reinterpret_cast<uint8_t*>(resultingI420Frame.data()), finalWidth,
+                                   reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth * finalHeight)), finalWidth/2,
+                                   reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
+                                   finalWidth, finalHeight);
+
                   if (VERBOSE) {
                     libyuv::I420ToARGB(yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
                                        yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
@@ -286,36 +349,41 @@ int32_t main(int32_t argc, char **argv) {
                                        finalWidth, finalHeight);
                     XPutImage(resultingFrameDisplay, resultingFrameWindow, DefaultGC(resultingFrameDisplay, 0), resultingFrameXImage, 0, 0, 0, 0, finalWidth, finalHeight);
                   }
+                  frameDecodedSuccessfully = true;
+                }
+              }
+            }
+          }
 
-                  double PSNR = 
+          // Compute PSNR/SSIM.
+          if (frameDecodedSuccessfully) {
+            // Show the results.
+            double PSNR =
 libyuv::I420Psnr(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
              reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
              reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
-             yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
-             yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-             yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()), finalWidth,
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)), finalWidth/2,
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)+(finalWidth*finalHeight)/4), finalWidth/2,
              finalWidth, finalHeight);
 
-                  double SSIM = 
+            double SSIM =
 libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalWidth,
              reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight)), finalWidth/2,
              reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2))), finalWidth/2,
-             yuvData[0], bufferInfo.UsrData.sSystemBuffer.iStride[0],
-             yuvData[1], bufferInfo.UsrData.sSystemBuffer.iStride[1],
-             yuvData[2], bufferInfo.UsrData.sSystemBuffer.iStride[1],
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()), finalWidth,
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)), finalWidth/2,
+             reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)+(finalWidth*finalHeight)/4), finalWidth/2,
              finalWidth, finalHeight);
 
-                  std::stringstream sstr;
-                  sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
-                  const std::string str = sstr.str();
-                  if (VERBOSE) {
-                    std::clog << str << std::endl;
-                  }
-                  if (reportFile && reportFile->good()) {
-                    *reportFile << str << std::endl;
-                  }
-                }
-              }
+            std::stringstream sstr;
+            sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);
+            const std::string str = sstr.str();
+            if (VERBOSE) {
+              std::clog << str << std::endl;
+            }
+            if (reportFile && reportFile->good()) {
+              *reportFile << str << std::endl;
             }
           }
         }

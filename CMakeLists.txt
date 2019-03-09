@@ -51,6 +51,14 @@ find_package(Libopenh264 REQUIRED)
 include_directories(SYSTEM ${OPENH264_INCLUDE_DIRS})
 set(LIBRARIES ${LIBRARIES} ${OPENH264_LIBRARIES})
 
+find_package(Libyuv REQUIRED)
+include_directories(SYSTEM ${YUV_INCLUDE_DIRS})
+set(LIBRARIES ${LIBRARIES} ${YUV_LIBRARIES})
+
+find_package(Libvpx REQUIRED)
+include_directories(SYSTEM ${VPX_INCLUDE_DIRS})
+set(LIBRARIES ${LIBRARIES} ${VPX_LIBRARIES})
+
 ################################################################################
 # Extract cluon-msc from cluon-complete.hpp.
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/cluon-msc
@@ -81,10 +89,6 @@ if(UNIX)
         include_directories(SYSTEM ${LIBRT_INCLUDE_DIR})
     endif()
 endif()
-
-find_package(Libyuv REQUIRED)
-include_directories(SYSTEM ${YUV_INCLUDE_DIRS})
-set(LIBRARIES ${LIBRARIES} ${YUV_LIBRARIES})
 
 SET_SOURCE_FILES_PROPERTIES(${CMAKE_CURRENT_SOURCE_DIR}/src/lodepng.cpp PROPERTIES COMPILE_FLAGS "-Wno-effc++ -DLODEPNG_NO_COMPILE_ENCODER")
 
