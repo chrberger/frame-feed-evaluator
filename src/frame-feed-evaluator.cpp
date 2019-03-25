@@ -60,6 +60,7 @@ int32_t main(int32_t argc, char **argv) {
     std::cerr << "         --delay.start:     delay before the first frame is replayed in ms; default: 5000" << std::endl;
     std::cerr << "         --timeout:         timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
     std::cerr << "         --noexitontimeout: do not end program on timeout" << std::endl;
+    std::cerr << "         --stopafter:       process only the first n frames (n > 0); default: 0 (process all)" << std::endl;
     std::cerr << "         --report:          name of the file for the report" << std::endl;
     std::cerr << "         --verbose:         sourceFrameDisplay PNG frame while replaying" << std::endl;
     std::cerr << "Example: " << argv[0] << " --folder=. --verbose" << std::endl;
@@ -77,6 +78,7 @@ int32_t main(int32_t argc, char **argv) {
     const uint32_t TIMEOUT{(commandlineArguments["timeout"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["timeout"])) : 40};
     const bool VERBOSE{commandlineArguments.count("verbose") != 0};
     const bool EXIT_ON_TIMEOUT{commandlineArguments.count("noexitontimeout") == 0};
+    const uint32_t STOPAFTER{(commandlineArguments["stopafter"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["stopafter"])) : 0};
 
     // Show frames.
     Display *sourceFrameDisplay{nullptr};
@@ -156,10 +158,12 @@ int32_t main(int32_t argc, char **argv) {
 
       uint32_t width{0}, height{0};
       uint32_t finalWidth{CROP_WIDTH}, finalHeight{CROP_HEIGHT};
+      uint32_t entryCounter{0};
       for (const auto &entry : entries) {
+        entryCounter++;
         std::string filename{entry};
         if (VERBOSE) {
-          std::clog << "[frame-feed-evaluator]: Processing '" << filename << "'." << std::endl;
+          std::clog << "[frame-feed-evaluator]: Processing " << entryCounter << "/" << entries.size() << ": '"  << filename << "'." << std::endl;
         }
 
         // Reset raw buffer for PNG.
@@ -394,6 +398,11 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalW
         // Delay playback if desired.
         if (0 < DELAY) {
           std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(DELAY));
+        }
+
+        // End processing if desired.
+        if ( (STOPAFTER > 0) && (entryCounter > STOPAFTER)) {
+          break;
         }
       }
     }
