@@ -61,6 +61,7 @@ int32_t main(int32_t argc, char **argv) {
     std::cerr << "         --timeout:         timeout in ms for waiting for encoded frame; default: 40ms (25fps)" << std::endl;
     std::cerr << "         --noexitontimeout: do not end program on timeout" << std::endl;
     std::cerr << "         --stopafter:       process only the first n frames (n > 0); default: 0 (process all)" << std::endl;
+    std::cerr << "         --savepng:         flag to store decoded lossy frames as .png; default: false" << std::endl;
     std::cerr << "         --report:          name of the file for the report" << std::endl;
     std::cerr << "         --verbose:         sourceFrameDisplay PNG frame while replaying" << std::endl;
     std::cerr << "Example: " << argv[0] << " --folder=. --verbose" << std::endl;
@@ -79,6 +80,7 @@ int32_t main(int32_t argc, char **argv) {
     const bool VERBOSE{commandlineArguments.count("verbose") != 0};
     const bool EXIT_ON_TIMEOUT{commandlineArguments.count("noexitontimeout") == 0};
     const uint32_t STOPAFTER{(commandlineArguments["stopafter"].size() != 0) ? static_cast<uint32_t>(std::stoi(commandlineArguments["stopafter"])) : 0};
+    const bool SAVE_PNG{commandlineArguments.count("savepng") == 0};
 
     // Show frames.
     Display *sourceFrameDisplay{nullptr};
@@ -379,6 +381,28 @@ libyuv::I420Ssim(reinterpret_cast<uint8_t*>(sharedMemoryFori420->data()), finalW
              reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)), finalWidth/2,
              reinterpret_cast<uint8_t*>(resultingI420Frame.data()+(finalWidth*finalHeight)+(finalWidth*finalHeight)/4), finalWidth/2,
              finalWidth, finalHeight);
+
+            if (SAVE_PNG) {
+              std::vector<unsigned char> image;
+              image.resize(finalWidth * finalHeight * 4);
+
+              if (-1 == libyuv::I420ToABGR(resultingI420Frame.data(), finalWidth,
+                                           resultingI420Frame.data()+(finalWidth * finalHeight), finalWidth/2,
+                                           resultingI420Frame.data()+(finalWidth * finalHeight + ((finalWidth * finalHeight) >> 2)), finalWidth/2,
+                                           image.data(), finalWidth * 4,
+                                           finalWidth, finalHeight) ) {
+                  std::cerr << "[frame-feed-evaluator]: Error transforming color space." << std::endl;
+              }
+              else {
+                  std::stringstream tmp;
+                  tmp << "lossy_" << std::setw(10) << std::setfill('0') << entryCounter << std::setfill(' ') << ".png";
+                  const std::string str = tmp.str();
+                  auto r = lodepng::encode(str.c_str(), image, finalWidth, finalHeight);
+                  if (r) {
+                      std::cerr << "[frame-feed-evaluator]: lodePNG error " << r << ": "<< lodepng_error_text(r) << std::endl;
+                  }
+              }
+            }
 
             std::stringstream sstr;
             sstr << "[frame-feed-evaluator]: " << filename << ";" << CROP_X << ";" << CROP_Y << ";" << finalWidth << ";" << finalHeight << ";size[bytes];" << LEN << ";" << "PSNR;" << PSNR << ";SSIM;" << SSIM << ";duration[microseconds];" << cluon::time::deltaInMicroseconds(after, before);

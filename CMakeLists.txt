@@ -90,7 +90,7 @@ if(UNIX)
     endif()
 endif()
 
-SET_SOURCE_FILES_PROPERTIES(${CMAKE_CURRENT_SOURCE_DIR}/src/lodepng.cpp PROPERTIES COMPILE_FLAGS "-Wno-effc++ -DLODEPNG_NO_COMPILE_ENCODER")
+SET_SOURCE_FILES_PROPERTIES(${CMAKE_CURRENT_SOURCE_DIR}/src/lodepng.cpp PROPERTIES COMPILE_FLAGS "-Wno-effc++")
 
 ################################################################################
 # Create executable.
